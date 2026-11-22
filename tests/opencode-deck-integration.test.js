@@ -87,10 +87,13 @@ test('signed store installation opens the actual SDK plugin, receives status and
   };
   await waitFor(() => readout.at(-1).some(key => key.title === 'Question' && key.subtitle === '? Rückfrage'));
   assert.ok(readout.at(-1).some(key => key.title === 'Running' && key.icon === 'spinner'));
+  assert.ok(readout.at(-1).some(key => key.title === 'Completed' && key.subtitle === 'Erfolgreich' && !key.icon));
   const [toggle] = [...view.read().keys].find(([, key]) => key.action === 'toggle');
   assert.equal(view.pressDown(toggle), true);
   assert.equal(view.pressUp(toggle), true);
-  await waitFor(() => readout.at(-1).some(key => key.title === 'Completed' && key.subtitle === 'Erfolgreich'));
+  await waitFor(() => readout.at(-1).some(key => key.action === 'toggle' && key.title === 'Aktiv'));
+  assert.ok(readout.at(-1).some(key => key.title === 'Completed' && key.subtitle === 'Erfolgreich'));
+  assert.ok(readout.at(-1).every(key => !['Question', 'Running'].includes(key.title)));
   assert.equal(view.tap(10), true);
   assert.equal(view.read(), null);
   assert.equal(sourceSignal.aborted, true);

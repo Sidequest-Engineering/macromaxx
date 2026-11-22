@@ -135,3 +135,105 @@ test('a full first page of active sessions does not hide inactive sessions on th
   });
   assert.deepEqual(seen[0]?.recent.map(row => row.status), ['succeeded']);
 });
+
+const form = (id, sessionID) => ({ id, sessionID, title: 'private question', fields: [] });
+
+test('lists an already-open question outside the history window for a known location', async () => {
+  const controller = new AbortController();
+  const seen = [];
+  await source.watchOpenCodeSessions({
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
+    discover: async () => ({ url: 'http://127.0.0.1:4096' }), makeClient: () => client,
+    fetcher: async input => {
+      const { pathname, searchParams } = new URL(input);
+      if (pathname === '/api/session/active') return Response.json({ data: {} });
+      if (pathname === '/api/session') return Response.json({ data: [record('newer')], cursor: {} });
+      if (pathname === '/api/session/ses_older') return Response.json({ data: record('older', 'succeeded') });
+      if (pathname === '/api/form' && searchParams.get('location[directory]') === '/private/canary')
+        return Response.json({ data: [form('form_open', 'ses_older')], location: record('newer').location });
+      return Response.json(empty);
+    },
+    onSnapshot(snapshot) {
+      if (snapshot.connection !== 'loading') { seen.push(snapshot); controller.abort(); }
+    },
+  });
+  assert.equal(seen[0]?.connection, 'ready');
+  assert.deepEqual(seen[0].active.map(({ id, status }) => [id, status]), [['ses_older', 'question']]);
+  assert.deepEqual(seen[0].recent.map(row => row.id), ['ses_newer']);
+  assert.doesNotMatch(JSON.stringify(seen), /private/);
+});
+
+test('tracks a late form for an unlisted session until the last request settles', async () => {
+  const controller = new AbortController();
+  let sendEvent, pending = [], snapshots = [];
+  const listen = { event: { async *subscribe({ signal }) {
+    while (!signal.aborted) {
+      const event = await new Promise(resolve => {
+        sendEvent = resolve;
+        signal.addEventListener('abort', () => resolve(null), { once: true });
+      });
+      if (event) yield event;
+    }
+  } } };
+  await source.watchOpenCodeSessions({
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(6000)]),
+    discover: async () => ({ url: 'http://127.0.0.1:4096' }), makeClient: () => listen,
+    fetcher: async input => {
+      const { pathname } = new URL(input);
+      if (pathname === '/api/session/active') return Response.json({ data: {} });
+      if (pathname === '/api/session/ses_late/form') {
+        const result = Response.json({ data: pending });
+        if (pending.length === 2) queueMicrotask(() => {
+          pending = pending.slice(1);
+          sendEvent({ type: 'form.replied', data: { sessionID: 'ses_late', id: 'form_first' } });
+        });
+        if (pending.length === 1) queueMicrotask(() => {
+          pending = [];
+          sendEvent({ type: 'form.cancelled', data: { sessionID: 'ses_late', id: 'form_second' } });
+        });
+        return result;
+      }
+      if (pathname === '/api/session/ses_late') {
+        const row = record('late');
+        return Response.json({ data: { ...row, time: { ...row.time, updated: 3 + pending.length } } });
+      }
+      return Response.json(empty);
+    },
+    onSnapshot(snapshot) {
+      if (snapshot.connection !== 'ready') return;
+      snapshots.push(snapshot.active.map(row => row.status));
+      if (snapshots.length === 1) {
+        pending = [form('form_first', 'ses_late'), form('form_second', 'ses_late')];
+        sendEvent({ type: 'form.created', data: { form: pending[0] } });
+      } else if (snapshots.length === 4) controller.abort();
+    },
+  });
+  assert.deepEqual(snapshots, [[], ['question'], ['question'], []]);
+});
+
+test('an unavailable location or a deleted request session does not hide other live sessions', async () => {
+  const controller = new AbortController();
+  const seen = [];
+  await source.watchOpenCodeSessions({
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
+    discover: async () => ({ url: 'http://127.0.0.1:4096' }), makeClient: () => client,
+    fetcher: async input => {
+      const { pathname, searchParams } = new URL(input);
+      if (pathname === '/api/session/active') return Response.json({ data: { ses_running: { type: 'running' } } });
+      if (pathname === '/api/session') return Response.json({
+        data: [record('running'), { ...record('other'), location: { directory: '/missing' } }], cursor: {},
+      });
+      if (pathname === '/api/session/ses_deleted' || (pathname === '/api/form' && searchParams.get('location[directory]') === '/missing'))
+        return new Response(null, { status: 404 });
+      if (pathname === '/api/form') return Response.json({ data: [form('form_stale', 'ses_deleted')] });
+      if (pathname === '/api/session/ses_other/form') return new Response(null, { status: 404 });
+      return Response.json(empty);
+    },
+    onSnapshot(snapshot) {
+      if (snapshot.connection !== 'loading') { seen.push(snapshot); controller.abort(); }
+    },
+  });
+  assert.equal(seen[0]?.connection, 'ready');
+  assert.equal(seen[0].activeTruncated, true);
+  assert.deepEqual(seen[0].active.map(({ id, status }) => [id, status]), [['ses_running', 'running']]);
+});

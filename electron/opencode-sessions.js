@@ -11,6 +11,8 @@ const OUTCOMES = new Set(['succeeded', 'failed', 'interrupted']);
 const SESSION_PAGE_SIZE = 50;
 const SESSION_PAGE_BUDGET = 4;
 const ACTIVE_SCAN_BUDGET = 256;
+const PENDING_LOCATION_BUDGET = 16;
+const PENDING_SESSION_BUDGET = 128;
 const EVENTS = [
   'session.status', 'session.idle', 'session.execution.started', 'session.execution.succeeded',
   'session.execution.failed', 'session.execution.interrupted', 'session.retry.scheduled',
@@ -145,6 +147,84 @@ async function chunked(values, mapper, signal) {
   }
 }
 
+const directoryFor = record => {
+  const value = record.location?.directory;
+  return typeof value === 'string' && value.length && value.length <= 4096 ? value : undefined;
+};
+
+async function fetchPending(get, route, query) {
+  try {
+    const response = await get(route, query);
+    if (!Array.isArray(response?.data) || (query && response.location?.directory !== query['location[directory]']))
+      return;
+    return new Set(response.data.map(item => item?.sessionID).filter(id => typeof id === 'string' && SESSION_ID.test(id)));
+  } catch {
+    return;
+  }
+}
+
+async function loadPending({ get, signal, records, activeIds, hints }) {
+  let limited = false;
+  const hinted = new Map(hints);
+  const directories = [...new Set([...records.values()].map(directoryFor).filter(Boolean))];
+  if (directories.length > PENDING_LOCATION_BUDGET) limited = true;
+  const scoped = new Map(), questions = new Set(), permissions = new Set(), extra = new Set();
+  await chunked(directories.slice(0, PENDING_LOCATION_BUDGET), async directory => {
+    const query = { 'location[directory]': directory };
+    const [forms, grants] = await Promise.all([
+      fetchPending(get, '/api/form', query), fetchPending(get, '/api/permission/request', query),
+    ]);
+    scoped.set(directory, { forms, grants });
+    for (const [results, pending] of [[forms, questions], [grants, permissions]]) {
+      for (const id of results || []) {
+        if (records.has(id)) pending.add(id);
+        else if (extra.size < PENDING_SESSION_BUDGET || extra.has(id)) {
+          extra.add(id);
+          pending.add(id);
+        } else limited = true;
+      }
+    }
+  }, signal);
+  const extraIds = [...new Set([...hinted.keys(), ...extra])];
+  if (extraIds.length > PENDING_SESSION_BUDGET) limited = true;
+  const inScope = new Set([...activeIds, ...extraIds.slice(0, PENDING_SESSION_BUDGET)]);
+  const prune = (id) => {
+    if (hinted.has(id) && hints.get(id) === hinted.get(id)) hints.delete(id);
+  };
+  await chunked([...inScope].filter(id => !records.has(id)), async id => {
+    const row = (await get(`/api/session/${id}`).catch(() => undefined))?.data;
+    if (row?.id === id) records.set(id, row);
+    else {
+      limited = true;
+      questions.delete(id);
+      permissions.delete(id);
+    }
+  }, signal);
+  const work = [...records].map(([id, record]) => {
+    const lookup = scoped.get(directoryFor(record));
+    return { id, record, forms: lookup?.forms, grants: lookup?.grants };
+  });
+  await chunked(work, async ({ id, record, forms, grants }) => {
+    if (record.time?.archived !== undefined) {
+      prune(id);
+      return;
+    }
+    if (hinted.has(id) || !forms || !grants) {
+      const [localForms, localGrants] = await Promise.all([
+        hinted.has(id) || !forms ? fetchPending(get, `/api/session/${id}/form`) : forms,
+        hinted.has(id) || !grants ? fetchPending(get, `/api/session/${id}/permission`) : grants,
+      ]);
+      for (const [current, pending] of [[localForms, questions], [localGrants, permissions]]) {
+        if (current?.has(id)) pending.add(id);
+        else if (current) pending.delete(id);
+        else limited = true;
+      }
+      if (localForms && localGrants && !questions.has(id) && !permissions.has(id)) prune(id);
+    }
+  }, signal);
+  return { questions, permissions, limited };
+}
+
 export async function watchOpenCodeSessions({
   signal, onSnapshot, fetcher = fetch, discover = options => discoverRegisteredOpenCode({ ...options, fetcher }),
   makeClient = OpenCode.make, now = Date.now,
@@ -184,13 +264,20 @@ export async function watchOpenCodeSessions({
         return boundedEvents(await fetcher(request, { ...options, redirect: 'error' }));
       } });
       const statuses = new Map();
+      const pendingHints = new Map();
       let revision = 0;
       const stream = (async () => {
         try {
           for await (const event of service.event.subscribe({ types: EVENTS, signal: run })) {
             if (run.aborted) break;
-            const id = event.data?.sessionID;
+            const id = event.type === 'form.created' ? event.data?.form?.sessionID : event.data?.sessionID;
             if (SESSION_ID.test(id)) {
+              if (event.type === 'form.created' || event.type === 'permission.asked' || pendingHints.has(id)) {
+                pendingHints.delete(id);
+                pendingHints.set(id, Symbol());
+              }
+              if (event.type === 'session.deleted' || event.type === 'session.archived') pendingHints.delete(id);
+              if (pendingHints.size > PENDING_SESSION_BUDGET) pendingHints.delete(pendingHints.keys().next().value);
               const status = event.type === 'session.status' ? event.data.status?.type
                 : event.type === 'session.retry.scheduled' ? 'retry'
                   : event.type === 'session.execution.started' ? 'busy' : undefined;
@@ -238,17 +325,9 @@ export async function watchOpenCodeSessions({
             const row = (await get(`/api/session/${id}`).catch(() => null))?.data;
             records.set(id, row?.id === id ? row : { id });
           }, run);
-          const pendingQuestions = new Set(), pendingPermissions = new Set(), assistantRetry = new Map();
-          const requests = await Promise.allSettled([
-            chunked([...records.keys()], async id => {
-              const [forms, permissions] = await Promise.all([
-                get(`/api/session/${id}/form`), get(`/api/session/${id}/permission`),
-              ]);
-              if (!Array.isArray(forms?.data) || !Array.isArray(permissions?.data))
-                throw new Error('Invalid OpenCode requests.');
-              if (forms.data.some(form => form?.sessionID === id)) pendingQuestions.add(id);
-              if (permissions.data.some(permission => permission?.sessionID === id)) pendingPermissions.add(id);
-            }, run),
+          const assistantRetry = new Map();
+          const [pending] = await Promise.all([
+            loadPending({ get, signal: run, records, activeIds, hints: pendingHints }),
             chunked(activeIds.filter(id => !statuses.has(id)), async id => {
               const result = await get(`/api/session/${id}/message`, { type: 'assistant', limit: '1', order: 'desc' })
                 .catch(() => undefined);
@@ -257,16 +336,16 @@ export async function watchOpenCodeSessions({
                 assistantRetry.set(id, result.data[0].retry.at);
             }, run),
           ]);
-          if (requests.some(result => result.status === 'rejected')) throw new Error('OpenCode pending state unavailable.');
           run.throwIfAborted();
           const liveStatuses = new Map([...statuses].filter(([, value]) => value.status !== 'retry' || !value.until || value.until > now())
             .map(([id, value]) => [id, value.status]));
           const result = normalizeOpenCodeSessions({
-            records: [...records.values()], active: foreground.data, pendingQuestions, pendingPermissions,
+            records: [...records.values()], active: foreground.data,
+            pendingQuestions: pending.questions, pendingPermissions: pending.permissions,
             liveStatuses, assistantRetry, now: now(),
           });
           emit({ connection: 'ready', ...result,
-            activeTruncated: result.activeTruncated || ids.length > ACTIVE_SCAN_BUDGET || !!cursor });
+             activeTruncated: result.activeTruncated || pending.limited || ids.length > ACTIVE_SCAN_BUDGET || !!cursor });
           await delay(1000, undefined, { signal: run });
         }
       } finally {
