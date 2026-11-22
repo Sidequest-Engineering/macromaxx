@@ -54,6 +54,34 @@ test('Rapid navigation drops queued intermediate pages', async () => {
   assert.deepEqual(writes.map(w => w.pixels[0]), [10, 30]);
 });
 
+test('Modal deck uses host artwork without the renderer and does not write queued frames after disconnect', async () => {
+  const base = makeKey('hotkey');
+  const writes = [];
+  let mode = null, unblock;
+  const device = new Devices({
+    getKeys: () => [base], getBrightness: () => 65, onStatus() {},
+    getDeckView: () => mode,
+  });
+  const hardware = {
+    setBrightness: async () => {},
+    fillKeyBuffer: async (index, pixels) => writes.push([index, pixels[0]]),
+    close: async () => {}, removeAllListeners() {},
+  };
+  device.deck = hardware;
+  device.controls = [{ index: 0, feedbackType: 'lcd', pixelSize: { width: 72, height: 72 } }];
+  await device.setImages([await artwork(base, 10)]);
+  mode = { keys: new Map([[0, { title: 'Session <&>', color: '#16483e', icon: 'spinner' }]]), phase: 0 };
+  await device.render();
+  assert.deepEqual(writes, [[0, 10], [0, 0x16]]);
+  hardware.setBrightness = () => new Promise(done => { unblock = done; });
+  mode = { ...mode, phase: 1 };
+  const rendering = device.render();
+  while (!unblock) await new Promise(setImmediate);
+  await device.disconnect();
+  unblock(); await rendering;
+  assert.deepEqual(writes, [[0, 10], [0, 0x16]]);
+});
+
 test('Image bank includes nested folders, blank keys, back button and OBS appearance', () => {
   const state = initialState(); const nested = makeKey('obs'); nested.actions[0].scene = 'Desktop';
   state.profiles[0].keys[4].children = [nested];

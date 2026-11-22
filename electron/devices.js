@@ -7,10 +7,11 @@ import { playIconTransition } from './icon-transitions.js';
 import { resolvedKeyFont } from '../shared/key-text.js';
 import { screensaverSettings, screensaverBudget } from '../shared/screensaver.js';
 import { ScreensaverRenderer } from './screensaver-renderer.js';
+import { renderDeckViewKey } from './deck-view-art.js';
 
 export class Devices {
-  constructor({ onStatus, onDown, onUp, getKeys, getBrightness, isActive = () => false, getSettings = () => ({}), getIdleSeconds = () => Infinity, onDisconnect = () => {}, listDevices = listStreamDecks, openDevice = openStreamDeck }) {
-    Object.assign(this, { onStatus, onDown, onUp, getKeys, getBrightness, isActive, getSettings, getIdleSeconds, onDisconnect, listDevices, openDevice });
+  constructor({ onStatus, onDown, onUp, getKeys, getBrightness, isActive = () => false, getSettings = () => ({}), getIdleSeconds = () => Infinity, onDisconnect = () => {}, getDeckView = () => null, listDevices = listStreamDecks, openDevice = openStreamDeck }) {
+    Object.assign(this, { onStatus, onDown, onUp, getKeys, getBrightness, isActive, getSettings, getIdleSeconds, onDisconnect, getDeckView, listDevices, openDevice });
     this.info = { connected: false, name: 'Virtual Stream Deck', rows: 3, columns: 5, count: 15, error: '' };
     this.cache = new Map();
     this.sent = new Map();
@@ -307,6 +308,34 @@ export class Devices {
       if (!deck) return;
       const current = () => this.deck === deck && revision === this.renderRevision && !this.stopping;
       await deck.setBrightness(this.getBrightness());
+      const view = this.getDeckView();
+      if (view) {
+        this.pendingTransition = null;
+        for (const control of this.controls) {
+          if (!current()) return;
+          const key = view.keys.get(control.index), phase = key?.icon === 'spinner' ? view.phase : 0;
+          const signature = `deck-view:${JSON.stringify([key?.title, key?.subtitle, key?.color, key?.icon, phase])}`;
+          if (this.sent.get(control.index) === signature) continue;
+          if (control.feedbackType === 'rgb') {
+            await deck.fillKeyColor(control.index, 0, 0, 0);
+          } else if (control.feedbackType === 'lcd') {
+            const cacheKey = `${signature}:${control.pixelSize.width}x${control.pixelSize.height}`;
+            let buffer = this.cache.get(cacheKey);
+            if (!buffer) {
+              buffer = await renderDeckViewKey(key, control, phase);
+              this.cache.set(cacheKey, buffer);
+              if (this.cache.size > 256) this.cache.delete(this.cache.keys().next().value);
+            }
+            if (!current()) return;
+            await deck.fillKeyBuffer(control.index, buffer, { format: 'rgb' });
+            if (this.deck !== deck) return;
+            this.displayed.set(control.index, buffer);
+          }
+          if (this.deck !== deck) return;
+          this.sent.set(control.index, signature);
+        }
+        return;
+      }
       const settings = this.getSettings();
       const keys = this.getKeys().map(key => resolvedKeyFont(key, settings));
       const targets = [];

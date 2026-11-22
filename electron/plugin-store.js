@@ -29,7 +29,7 @@ export function storeDataDirectory(userData, config = {}) {
   return path.join(userData, 'plugin-stores', createHash('sha256').update(authority).digest('hex'));
 }
 
-export async function createPluginStore({ app, dialog, getWindow, getState, changed, report }) {
+export async function createPluginStore({ app, dialog, getWindow, getState, changed, report, deckView, getControls }) {
   let directory = storeDataDirectory(app.getPath('userData'));
   const patches = new Map();
   let registry, configError, channel, disabledReason;
@@ -45,6 +45,7 @@ export async function createPluginStore({ app, dialog, getWindow, getState, chan
   } catch (error) { configError = 'Store configuration invalid: ' + error.message; report(error); }
   const store = new PluginStore({
     directory, registry, appVersion: app.getVersion(), changed,
+    onDeck: (id, frame, context) => deckView?.apply(id, frame, context),
     onDisplay(id, keyId, patch) {
       if (keyId === null) { patches.delete(id); }
       else { if (!patches.has(id)) patches.set(id, new Map()); patches.get(id).set(keyId, patch); }
@@ -79,8 +80,11 @@ export async function createPluginStore({ app, dialog, getWindow, getState, chan
   const execute = (reference, config, signal, context = {}) => {
     const ref = parseStoreReference(reference);
     if (!ref) throw new Error('Not a store plugin.');
-    return store.execute(ref.id, ref.actionId, { config, ...context }, signal);
+    return store.execute(ref.id, ref.actionId, { config, ...context }, signal, 'execute', deckView?.entry(getControls?.()));
   };
+  const renderDeck = (id, context, signal) => store.execute(id, context.actionId, {
+    keyId: context.keyId, config: context.config,
+  }, signal, 'deckRender', context);
   const keyEvent = (key, event) => {
     const action = key?.actions?.[0];
     if (hasMissingCredentials(action)) return;
@@ -108,5 +112,5 @@ export async function createPluginStore({ app, dialog, getWindow, getState, chan
   // Refresh while hidden too; no background update may add permissions.
   const timer = registry && setInterval(() => handlers.storeRefresh().catch(report), 6 * 60 * 60 * 1000);
   timer?.unref();
-  return { snapshot, handlers, actions, execute, keyEvent, renderKey, visuals, cancel: () => store.cancel(), close: () => { clearInterval(timer); store.close(); } };
+  return { snapshot, handlers, actions, execute, keyEvent, renderKey, renderDeck, visuals, cancel: () => store.cancel(), close: () => { clearInterval(timer); store.close(); } };
 }

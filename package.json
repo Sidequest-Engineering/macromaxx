@@ -1,6 +1,6 @@
 {
   "name": "macromaxx",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stream Deck editor with profiles, actions, and plugins.",
   "desktopName": "macromaxx.desktop",
   "author": "MacroMaxx",
@@ -24,8 +24,8 @@
   },
   "dependencies": {
     "@elgato-stream-deck/node": "^7.0.0",
-    "@macromaxx/plugin-runtime": "file:vendor/plugin-packages/macromaxx-plugin-runtime-0.1.0.tgz",
-    "@macromaxx/plugin-sdk": "file:vendor/plugin-packages/macromaxx-plugin-sdk-0.1.0.tgz",
+    "@macromaxx/plugin-runtime": "file:vendor/plugin-packages/macromaxx-plugin-runtime-0.2.0.tgz",
+    "@macromaxx/plugin-sdk": "file:vendor/plugin-packages/macromaxx-plugin-sdk-0.2.0.tgz",
     "lucide-react": "^0.468.0",
     "obs-websocket-js": "^5.0.6",
     "react": "^19.0.0",

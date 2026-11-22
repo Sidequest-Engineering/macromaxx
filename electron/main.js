@@ -5,6 +5,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Devices } from './devices.js';
+import { createDeckView } from './deck-view.js';
 import { Plugins } from './plugins.js';
 import { createPluginStore, mergePluginStatus, dispatchPluginKeyEvent } from './plugin-store.js';
 import { Actions } from './actions.js';
@@ -18,7 +19,7 @@ import { createWorkspaceExport, missingWorkspaceCredentials } from '../shared/wo
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dev = process.argv.includes('--dev');
 const nativeDirectory = path.join(here, '../plugins/native');
-let win, tray, store, state, devices, plugins, pluginStore, actions, autoProfiles, native, folderPath = [], quitting = false;
+let win, tray, store, state, devices, plugins, pluginStore, actions, autoProfiles, native, deckView, folderPath = [], quitting = false;
 let bootReady = false, showRequested = false, creatingWindow, saveRequest, notifiedBackground = false;
 let logs = [], pressed = new Map();
 const emit = event => { if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('app:event', event); };
@@ -38,6 +39,7 @@ async function diagnosticSnapshot() {
 const log = (level, title, message) => { const item = { id: crypto.randomUUID(), time: Date.now(), level, title, message }; logs = [item, ...logs].slice(0, 200); emit({ type: 'log', item }); };
 const publishState = () => emit({ type: 'state', state, folderPath });
 function releasePhysicalKeys() {
+  deckView?.closeForLifecycle();
   for (const index of pressed.keys()) emit({ type: 'press', index, down: false });
   pressed.clear(); actions?.cancel(); pluginStore?.cancel();
   return native?.releaseAll().catch(e => log('error', 'Native input release', e.message));
@@ -52,14 +54,16 @@ async function navigate(target) {
     if (target.path.some(i => !Number.isInteger(i) || i < 0 || i > 127) || target.path.length > 12) throw new Error('Invalid folder path.');
     folderPath = target.path;
   }
+  deckView?.closeForLifecycle();
   publishState(); status();
   if (!target.profileId && JSON.stringify(previousPath) !== JSON.stringify(folderPath)) {
     await devices.navigateTransition(folderPath.length > previousPath.length ? 'in' : 'out');
   } else await devices.render();
 }
-async function execute(index, long = false) {
+async function execute(index, long = false, physical = false) {
   if (quitting) return;
   if (!Number.isInteger(index) || index < 0 || index >= devices.info.count) throw new Error('Invalid key.');
+  if (!physical && deckView?.tap(index)) return;
   const slot = deckSlots(state, folderPath, devices.info.count)[index];
   if (slot.isBack) return navigate({ up: true });
   const key = slot.key; if (!key) return;
@@ -129,14 +133,27 @@ else {
     await native.initialize();
     autoProfiles = new AutoProfiles(() => state, id => navigate({ profileId: id, automatic: true }), e => log('error', 'Automatic profile', e.message));
     const userPlugins = new Plugins([path.join(app.getAppPath(), 'plugins'), path.join(app.getPath('userData'), 'plugins')]);
-    pluginStore = await createPluginStore({ app, dialog, getWindow: () => win, getState: () => state, changed: () => { status(); devices?.render().catch(e => log('error', 'Plugin display', e.message)); }, report: e => log('error', 'Plugin store', e.message) });
+    deckView = createDeckView({
+      render: () => devices?.render(),
+      report: () => log('error', 'Plugin deck view', 'The plugin deck view could not be refreshed.'),
+      dispatch: (id, context, signal) => pluginStore.renderDeck(id, context, signal),
+      canAnimate: () => devices?.info.connected && !devices.info.screensaver,
+      onOpen: () => {
+        for (const index of pressed.keys()) emit({ type: 'press', index, down: false });
+        const holds = [...pressed.values()].filter(record => record.hold).map(record => record.hold);
+        pressed.clear();
+        for (const hold of holds) void hold.then(release => release()).catch(e => log('error', 'Native release', e.message));
+      },
+    });
+    pluginStore = await createPluginStore({ app, dialog, getWindow: () => win, getState: () => state, changed: () => { status(); devices?.render().catch(e => log('error', 'Plugin display', e.message)); }, report: e => log('error', 'Plugin store', e.message), deckView, getControls: () => devices?.info.connected ? devices.controls : undefined });
     plugins = { scan: async () => [...await userPlugins.scan(), ...pluginStore.actions()], execute: (id, config, signal, context) => typeof id === 'string' && id.startsWith('store:') ? pluginStore.execute(id, config, signal, context) : userPlugins.execute(id, config, signal), close: () => { userPlugins.close(); pluginStore.close(); } };
     await plugins.scan();
-    devices = new Devices({ onStatus: status, onDisconnect: releasePhysicalKeys, getKeys: () => deckSlots(state, folderPath, devices?.info.count || 15).map(slot => pluginStore.renderKey(native.renderKey(slot.key))), getBrightness: () => state.settings.brightness, isActive: key => native.visual(key)?.active ?? isKeyActive(key, native.snapshot().obs), getSettings: () => state.settings,
+    devices = new Devices({ onStatus: status, onDisconnect: releasePhysicalKeys, getDeckView: deckView.read, getKeys: () => deckSlots(state, folderPath, devices?.info.count || 15).map(slot => pluginStore.renderKey(native.renderKey(slot.key))), getBrightness: () => state.settings.brightness, isActive: key => native.visual(key)?.active ?? isKeyActive(key, native.snapshot().obs), getSettings: () => state.settings,
       getIdleSeconds: () => powerMonitor.getSystemIdleTime(),
       onDown: index => {
         if (quitting) return;
         if (pressed.has(index)) return;
+        if (deckView.pressDown(index)) return;
         const key = deckSlots(state, folderPath, devices.info.count)[index]?.key;
         const action = key?.actions?.[0];
         const record = { time: Date.now(), keyId: key?.id };
@@ -147,10 +164,11 @@ else {
       },
       onUp: index => {
         const record = pressed.get(index); pressed.delete(index); emit({ type: 'press', index, down: false });
+        if (deckView.pressUp(index)) return;
         const key = deckSlots(state, folderPath, devices.info.count)[index]?.key;
         if (record?.keyId === key?.id) dispatchPluginKeyEvent(pluginStore, key, 'keyUp', e => log('error', 'Plugin key up', e.message));
         if (record?.hold) record.hold.then(release => release()).catch(e => log('error', 'Native release', e.message));
-        else if (record && record.keyId === deckSlots(state, folderPath, devices.info.count)[index]?.key?.id) execute(index, Date.now() - record.time > 600).catch(e => log('error', 'Key', e.message));
+        else if (record && record.keyId === deckSlots(state, folderPath, devices.info.count)[index]?.key?.id) execute(index, Date.now() - record.time > 600, true).catch(e => log('error', 'Key', e.message));
       }
     });
     actions = new Actions({ plugins, shell, getState: () => state, navigate, log, updateKey, status, native });
@@ -161,7 +179,7 @@ else {
         validateState(next); const old = state.settings;
         await native.beforeSettings(old, next.settings);
         await store.save(next);
-        if (state.activeProfileId !== next.activeProfileId) { folderPath = []; autoProfiles.manual(next.activeProfileId); }
+        if (state.activeProfileId !== next.activeProfileId) { deckView.closeForLifecycle(); folderPath = []; autoProfiles.manual(next.activeProfileId); }
         state = next; await native.configure(old, state.settings); autoProfiles.update(native.snapshot().focus, true); await devices.render(); return true;
       },
       flushComplete: (_, id) => { if (saveRequest?.id === id) saveRequest.finish(); },
@@ -228,6 +246,7 @@ else {
     event.preventDefault();
     if (app.cleanupStarted) return;
     app.cleanupStarted = true;
+    deckView?.closeForLifecycle();
     flushRenderer().finally(() => {
       actions.close(); plugins.close(); autoProfiles.close();
       Promise.allSettled([native.close(), devices.close(), store.queue]).then(() => { app.cleanupDone = true; app.quit(); });
