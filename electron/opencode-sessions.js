@@ -181,7 +181,7 @@ export async function watchOpenCodeSessions({
       let revision = 0;
       const stream = (async () => {
         try {
-          for await (const event of service.event.subscribe({ types: EVENTS }, { signal: run })) {
+          for await (const event of service.event.subscribe({ types: EVENTS, signal: run })) {
             if (run.aborted) break;
             const id = event.data?.sessionID;
             if (SESSION_ID.test(id)) {

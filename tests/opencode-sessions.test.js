@@ -8,8 +8,9 @@ const record = (name, outcome) => ({
   outcome, metadata: { prompt: 'private-prompt' },
 });
 const empty = { data: [] };
-const client = { event: { async *subscribe(_, { signal } = {}) {
-  if (signal && !signal.aborted) await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+const client = { event: { async *subscribe({ signal }) {
+  assert.ok(signal, 'OpenCode 2.3.2 takes cancellation in the same options as the filters');
+  if (!signal.aborted) await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
 } } };
 
 test('normalizes every session status, prioritizing questions and permissions over running and retry', () => {
