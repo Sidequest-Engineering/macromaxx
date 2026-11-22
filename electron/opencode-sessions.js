@@ -8,6 +8,9 @@ import { validateOpenCodeSnapshot } from '@macromaxx/plugin-sdk/contracts';
 const SESSION_ID = /^ses[A-Za-z0-9_-]{1,125}$/;
 const PRIORITY = { question: 0, permission: 1, retry: 2, running: 3, unknown: 4 };
 const OUTCOMES = new Set(['succeeded', 'failed', 'interrupted']);
+const SESSION_PAGE_SIZE = 50;
+const SESSION_PAGE_BUDGET = 4;
+const ACTIVE_SCAN_BUDGET = 256;
 const EVENTS = [
   'session.status', 'session.idle', 'session.execution.started', 'session.execution.succeeded',
   'session.execution.failed', 'session.execution.interrupted', 'session.retry.scheduled',
@@ -117,7 +120,7 @@ export function normalizeOpenCodeSessions({
   const newest = (a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id);
   activeRows.sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status] || newest(a, b));
   recent.sort(newest);
-  return { active: activeRows.slice(0, 128), recent: recent.slice(0, 50), activeTruncated: activeRows.length > 128 };
+  return { active: activeRows.slice(0, 128), recent: recent.slice(0, SESSION_PAGE_SIZE), activeTruncated: activeRows.length > 128 };
 }
 
 function boundedEvents(response) {
@@ -175,7 +178,10 @@ export async function watchOpenCodeSessions({
         if (url.origin !== base.origin || url.pathname !== '/api/event' ||
           (options?.method || (input instanceof Request ? input.method : 'GET')) !== 'GET')
           throw new Error('Invalid OpenCode event request.');
-        return boundedEvents(await fetcher(input, { ...options, redirect: 'error' }));
+        url.searchParams.delete('types');
+        for (const type of EVENTS) url.searchParams.append('types', type);
+        const request = input instanceof Request ? new Request(url, input) : url;
+        return boundedEvents(await fetcher(request, { ...options, redirect: 'error' }));
       } });
       const statuses = new Map();
       let revision = 0;
@@ -208,16 +214,26 @@ export async function watchOpenCodeSessions({
           }
           synced = revision;
           last = now();
-          const [foreground, latest] = await Promise.all([
-            get('/api/session/active'), get('/api/session', { archived: 'false', limit: '50', order: 'desc' }, 1024 * 1024),
-          ]);
-          if (!isObject(foreground?.data) || !Array.isArray(latest?.data) ||
-            latest.data.some(item => !isObject(item) || !SESSION_ID.test(item.id)))
-            throw new Error('Invalid OpenCode session response.');
+          const foreground = await get('/api/session/active');
+          if (!isObject(foreground?.data)) throw new Error('Invalid OpenCode session response.');
           const ids = Object.keys(foreground.data);
           if (ids.some(id => !SESSION_ID.test(id))) throw new Error('Invalid OpenCode session identifier.');
-          const activeIds = ids.slice(0, 128);
-          const records = new Map(latest.data.slice(0, 50).map(item => [item.id, item]));
+          const activeIds = ids.slice(0, ACTIVE_SCAN_BUDGET);
+          const records = new Map();
+          let cursor;
+          for (let page = 0; page < SESSION_PAGE_BUDGET; page++) {
+            const query = { archived: 'false', limit: String(SESSION_PAGE_SIZE),
+              ...(cursor ? { cursor } : { order: 'desc' }) };
+            const latest = await get('/api/session', query, 1024 * 1024);
+            if (!Array.isArray(latest?.data) ||
+              latest.data.some(item => !isObject(item) || !SESSION_ID.test(item.id)))
+              throw new Error('Invalid OpenCode session response.');
+            for (const item of latest.data.slice(0, SESSION_PAGE_SIZE)) records.set(item.id, item);
+            cursor = latest.cursor?.next;
+            if (cursor == null) break;
+            if (typeof cursor !== 'string' || !cursor || cursor.length > 4096)
+              throw new Error('Invalid OpenCode session cursor.');
+          }
           await chunked(activeIds.filter(id => !records.has(id)), async id => {
             const row = (await get(`/api/session/${id}`).catch(() => null))?.data;
             records.set(id, row?.id === id ? row : { id });
@@ -249,8 +265,9 @@ export async function watchOpenCodeSessions({
             records: [...records.values()], active: foreground.data, pendingQuestions, pendingPermissions,
             liveStatuses, assistantRetry, now: now(),
           });
-          emit({ connection: 'ready', ...result, activeTruncated: result.activeTruncated || ids.length > 128 });
-          await delay(500, undefined, { signal: run });
+          emit({ connection: 'ready', ...result,
+            activeTruncated: result.activeTruncated || ids.length > ACTIVE_SCAN_BUDGET || !!cursor });
+          await delay(1000, undefined, { signal: run });
         }
       } finally {
         attempt.abort();

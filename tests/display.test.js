@@ -82,6 +82,23 @@ test('Modal deck uses host artwork without the renderer and does not write queue
   assert.deepEqual(writes, [[0, 10], [0, 0x16]]);
 });
 
+test('Leaving a modal clears old session artwork even if normal renderer artwork is unavailable', async () => {
+  let mode;
+  const writes = [];
+  const device = new Devices({
+    getKeys: () => [makeKey('hotkey')], getBrightness: () => 65, onStatus() {},
+    getDeckView: () => mode,
+  });
+  device.deck = { setBrightness: async () => {}, fillKeyBuffer: async (_, pixels) => writes.push(pixels[0]) };
+  device.controls = [{ index: 0, feedbackType: 'lcd', pixelSize: { width: 72, height: 72 } }];
+  mode = { keys: new Map([[0, { title: 'Private title', color: '#16483e' }]]), phase: 0 };
+  await device.render();
+  mode = null;
+  await device.render();
+  assert.deepEqual(writes, [0x16, 0]);
+  assert.equal(device.deckViewCache.size, 0);
+});
+
 test('Image bank includes nested folders, blank keys, back button and OBS appearance', () => {
   const state = initialState(); const nested = makeKey('obs'); nested.actions[0].scene = 'Desktop';
   state.profiles[0].keys[4].children = [nested];

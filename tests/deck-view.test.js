@@ -88,3 +88,17 @@ test('spinner caps cadence and schedules no additional frame while a USB draw is
   assert.equal(pending.size, 0);
   assert.deepEqual(drawn, [0, 1, undefined]);
 });
+
+test('workspace input stays consumed until Back restores the device', async () => {
+  let restore;
+  const { view } = setup({ render: () => view.read() ? undefined : new Promise(resolve => { restore = resolve; }) });
+  view.apply('plugin', frame, opening(view));
+  view.tap(3);
+  assert.equal(view.read(), null, 'normal artwork can now be rendered');
+  assert.equal(view.tap(2), true, 'simulated workspace taps are blocked too');
+  assert.equal(view.pressDown(2), true);
+  restore();
+  await new Promise(setImmediate);
+  assert.equal(view.pressUp(2), true, 'a key held through restoration is not replayed');
+  assert.equal(view.tap(2), false);
+});

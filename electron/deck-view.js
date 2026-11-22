@@ -3,11 +3,16 @@ import { validateDeckFrame, validateDeckLayout } from '@macromaxx/plugin-sdk/con
 const backKey = Object.freeze({ title: '↩', subtitle: 'Zurück', color: '#49425c' });
 const loading = Object.freeze({ connection: 'loading', active: [], recent: [], activeTruncated: false });
 
+export function finishDeckPress(record, consumed, report) {
+  const hold = record?.hold?.then(release => release()).catch(report);
+  return { hold, consumed: consumed || !!hold };
+}
+
 export function createDeckView({
-  render, report, dispatch, startSource, onOpen = () => {}, canAnimate = () => true,
+  render, restore = render, report, dispatch, startSource, onOpen = () => {}, canAnimate = () => true,
   setTimer = setTimeout, clearTimer = clearTimeout,
 }) {
-  let mode = null, generation = Symbol();
+  let mode = null, restoring, generation = Symbol();
   const down = new Map();
   const redraw = () => Promise.resolve(render()).catch(report);
 
@@ -20,7 +25,7 @@ export function createDeckView({
     return validateDeckLayout({ slots, backIndex });
   };
   const entry = controls => {
-    if (mode) return;
+    if (mode || restoring) return;
     const deck = layout(controls);
     return deck && { generation, deck };
   };
@@ -32,7 +37,18 @@ export function createDeckView({
     if (!old) return;
     old.controller.abort();
     clearTimer(old.timer);
-    void redraw();
+    const token = Symbol();
+    restoring = token;
+    const finish = () => {
+      if (restoring !== token) return;
+      restoring = undefined;
+      generation = Symbol();
+    };
+    try {
+      const pending = restore();
+      if (pending?.then) void Promise.resolve(pending).catch(report).finally(finish);
+      else finish();
+    } catch (error) { report(error); finish(); }
   }
   function schedule(current) {
     if (mode !== current || current.timer || current.animating || !current.animate ||
@@ -85,7 +101,7 @@ export function createDeckView({
         paint(mode, validateDeckFrame(frame, mode.context.deck));
       return;
     }
-    if (context.event !== 'execute' || mode || context.generation !== generation) return;
+    if (context.event !== 'execute' || mode || restoring || context.generation !== generation) return;
     validateDeckFrame(frame, context.deck);
     generation = Symbol();
     const current = {
@@ -108,7 +124,7 @@ export function createDeckView({
     }
   }
   function tap(index) {
-    if (!mode) return false;
+    if (!mode) return !!restoring;
     if (index === mode.context.deck.backIndex) close();
     else {
       const action = mode.keys.get(index)?.action;
@@ -121,12 +137,12 @@ export function createDeckView({
   }
   function pressDown(index) {
     down.set(index, generation);
-    return !!mode;
+    return !!mode || !!restoring;
   }
   function pressUp(index) {
     const started = down.get(index);
     down.delete(index);
-    if (started !== generation) return !!mode || started !== undefined;
+    if (started !== generation) return !!mode || !!restoring || started !== undefined;
     return tap(index);
   }
   return { layout, entry, apply, tap, pressDown, pressUp, read: () => mode, close, closeForLifecycle: () => close() };

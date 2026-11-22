@@ -90,3 +90,48 @@ test('registration probe follows no redirect and keeps the credential at the pin
   });
   assert.equal(endpoint, undefined);
 });
+
+test('the real client sends a server-side event allowlist, not the full content stream', async () => {
+  const controller = new AbortController();
+  const requests = [];
+  await source.watchOpenCodeSessions({
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
+    discover: async () => ({ url: 'http://127.0.0.1:4096' }),
+    fetcher(input) {
+      const url = new URL(input instanceof Request ? input.url : input);
+      if (url.pathname === '/api/event') {
+        requests.push(url);
+        return Promise.resolve(new Response(new ReadableStream({}), { headers: { 'content-type': 'text/event-stream' } }));
+      }
+      return Promise.resolve(Response.json({ data: url.pathname.endsWith('/active') ? {} : [], cursor: {} }));
+    },
+    onSnapshot(snapshot) { if (snapshot.connection !== 'loading') controller.abort(); },
+  });
+  const types = requests[0]?.searchParams.getAll('types') ?? [];
+  assert.ok(types.includes('session.status'));
+  assert.ok(types.includes('form.created'));
+  assert.ok(!types.includes('session.text.delta'));
+});
+
+test('a full first page of active sessions does not hide inactive sessions on the next page', async () => {
+  const controller = new AbortController();
+  const seen = [];
+  const head = Array.from({ length: 50 }, (_, i) => record(`active${i}`));
+  const active = Object.fromEntries(head.map(row => [row.id, { type: 'running' }]));
+  await source.watchOpenCodeSessions({
+    signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]),
+    discover: async () => ({ url: 'http://127.0.0.1:4096' }), makeClient: () => client,
+    fetcher: async input => {
+      const url = new URL(input);
+      if (url.pathname.endsWith('/active')) return Response.json({ data: active });
+      if (url.pathname === '/api/session') return Response.json(url.searchParams.get('cursor') === 'second'
+        ? { data: [record('older', 'succeeded')], cursor: { next: null } }
+        : { data: head, cursor: { next: 'second' } });
+      return Response.json(empty);
+    },
+    onSnapshot(snapshot) {
+      if (snapshot.connection !== 'loading') { seen.push(snapshot); controller.abort(); }
+    },
+  });
+  assert.deepEqual(seen[0]?.recent.map(row => row.status), ['succeeded']);
+});

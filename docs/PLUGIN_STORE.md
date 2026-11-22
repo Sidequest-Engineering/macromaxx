@@ -56,12 +56,22 @@ Settings are unencrypted plugin-local non-secret JSON, separate from workspace e
 
 ## Deliberate limitations and release gates
 
-- Terminal, network, direct files, arbitrary plugin UI, native addons and privileged third-party runtimes are rejected, not falsely authorized by a dialog.
+- Terminal, arbitrary network access, direct files, arbitrary plugin UI, native addons and privileged third-party runtimes are rejected, not falsely authorized by a dialog.
 - Independent daemon, platform-specific OS containment, graceful deactivation hooks and threshold/offline signing automation need further agreed implementation.
 - Version 1 uses the app's bundled plugin icon; custom publisher icon assets are not yet part of its intentionally narrow package format.
 - Reviewed code may still be malicious. Engine/WASM vulnerabilities, local account compromise and unavailable offline revocation are residual risks.
 - Production code uses pinned Actions, separated main-only governance/signing jobs, serialized publishing and authenticated history on `production-publication`. Old `gh-pages` is inactive test audit history. Actual bootstrap and normal renewal have succeeded; separate one-key-per-role signing is not a multi-person threshold. Pages is not administrator-proof immutable storage. External Healthchecks/notification services are deliberately deferred; internal signed health checks remain. Real48-hour operation and untested platforms are not certified by this activation.
 - Validate Linux/Windows/macOS packaged workers, process shutdown, USB behavior and app signatures before external release. Linux unit/build results alone do not certify those platforms.
+
+## OpenCode Sessions
+
+MacroMaxx 0.2 adds a temporary, host-rendered view for LCD Stream Decks. A compatible OpenCode Sessions plugin adds the **OpenCode öffnen** action to the existing key editor. **Zurück** restores the original workspace, **Zuletzt** switches to recent outcomes, and the action's `animate` setting can turn off the busy spinner. An indicator for a question or permission is read-only; respond in OpenCode.
+
+The two new plugin capabilities are independently authorized by the manifest. `deck:write` is limited to declarative key visuals and plugin-local navigation on the active view. `opencode:sessions:read` returns sanitized status data from the already-running registered local OpenCode V2 service, only while the view is open. It does not start a service or open a remote/standalone OpenCode server. Linux, OpenCode V2.3.2 or newer V2, and at least five LCD keys are required for this plugin.
+
+New clients prefer the signed `catalog-v2.json` target. Registry publications retain a separate signed `catalog.json` for older permission validators. An invalid or unavailable advertised full catalog does not fall back to the legacy target.
+
+To exercise a real plugin bundle with an ephemeral signed registry, set `MM_OPENCODE_PLUGIN_PACKAGE` to its `.mmxp` and `MM_OPENCODE_PLUGIN_REGISTRY` to the compatible registry checkout and run `node --test tests/opencode-deck-integration.test.js`. Optionally set `MM_OPENCODE_LEGACY_SDK` to the original SDK's `src/contracts.js` to check that the original parser accepts the old catalog but rejects the new capability manifest.
 
 ## Verification performed in this workspace
 

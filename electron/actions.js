@@ -5,7 +5,7 @@ export class Actions {
     Object.assign(this, { plugins, shell, getState, navigate, log, updateKey, status, native });
     this.running = new Map();
   }
-  async execute(key, long = false) {
+  async execute(key, long = false, deckEntry) {
     if (!key) return;
     if (this.running.has(key.id)) { this.running.get(key.id).abort(); return; }
     const actions = long && key.longActions?.length ? key.longActions : key.actions;
@@ -13,7 +13,7 @@ export class Actions {
     try {
       for (const action of actions) {
         if (controller.signal.aborted) throw new Error('Canceled');
-        try { const result = await this.run(action, controller.signal, { keyId: key.id, long }); if (result?.label || result?.color) this.updateKey(key.id, result); this.log('success', key.label, result?.message || `${action.type} executed`); }
+        try { const result = await this.run(action, controller.signal, { keyId: key.id, long, ...(deckEntry ? { deckEntry } : {}) }); if (result?.label || result?.color) this.updateKey(key.id, result); this.log('success', key.label, result?.message || `${action.type} executed`); }
         catch (error) { this.log('error', key.label, error.message); if (key.stopOnError !== false || controller.signal.aborted) break; }
       }
     } finally { this.running.delete(key.id); this.status(); }

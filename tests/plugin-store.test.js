@@ -6,6 +6,7 @@ import path from 'node:path';
 import { Actions } from '../electron/actions.js';
 import { liveKey } from '../shared/visuals.js';
 import { mergePluginStatus, parseStoreReference, dispatchPluginKeyEvent, storeDataDirectory, createPluginStore } from '../electron/plugin-store.js';
+import { createDeckView, finishDeckPress } from '../electron/deck-view.js';
 
 test('disabled activation reports its reason without loading or deleting retired authority data', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mmx-disabled-')); t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -47,6 +48,33 @@ test('physical keyUp is enqueued before the action chain execute event', async (
   dispatchPluginKeyEvent(store, key, 'keyUp', error => { throw error; });
   await actions.execute(key);
   assert.deepEqual(events, ['keyUp', 'execute']);
+});
+
+test('native holds are released even when the deck consumes the physical key-up', async () => {
+  let released = false;
+  const hold = Promise.resolve(() => { released = true; });
+  await finishDeckPress({ hold }, true, error => { throw error; }).hold;
+  assert.equal(released, true);
+});
+
+test('a delayed action chain cannot mount a deck view after its workspace generation ends', async () => {
+  const controls = [0, 1, 2, 3, 4].map(index => ({ index, row: 0, column: index, feedbackType: 'lcd' }));
+  const view = createDeckView({ render() {}, report: assert.fail, dispatch() {} });
+  let called = false;
+  const actions = new Actions({ plugins: {
+    execute(_id, config, _signal, context) {
+      called = true;
+      assert.ok(context.deckEntry, 'the generation is captured once at action-chain start');
+      view.apply('test', { keys: [] }, { ...context.deckEntry, event: 'execute', config });
+    },
+  }, native: { handles: () => false }, log: (level, _, message) => { assert.notEqual(level, 'error', message); }, status() {} });
+  const pending = actions.execute({
+    id: 'launch', actions: [{ type: 'delay', ms: 10 }, { type: 'plugin', pluginId: 'store:test--opencode:open' }],
+  }, false, view.entry(controls));
+  view.closeForLifecycle();
+  await pending;
+  assert.equal(called, true);
+  assert.equal(view.read(), null);
 });
 
 test('physical plugin events cannot bypass incomplete imported credentials', () => {

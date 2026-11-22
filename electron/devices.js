@@ -14,6 +14,7 @@ export class Devices {
     Object.assign(this, { onStatus, onDown, onUp, getKeys, getBrightness, isActive, getSettings, getIdleSeconds, onDisconnect, getDeckView, listDevices, openDevice });
     this.info = { connected: false, name: 'Virtual Stream Deck', rows: 3, columns: 5, count: 15, error: '' };
     this.cache = new Map();
+    this.deckViewCache = new Map();
     this.sent = new Map();
     this.images = new Map();
     this.displayed = new Map();
@@ -225,6 +226,7 @@ export class Devices {
     this.path = null;
     this.sent.clear();
     this.displayed.clear();
+    this.deckViewCache.clear();
     this.transitionCache.clear();
     this.waveCache.clear();
     if (deck) { deck.removeAllListeners(); await deck.close().catch(() => {}); }
@@ -320,11 +322,12 @@ export class Devices {
             await deck.fillKeyColor(control.index, 0, 0, 0);
           } else if (control.feedbackType === 'lcd') {
             const cacheKey = `${signature}:${control.pixelSize.width}x${control.pixelSize.height}`;
-            let buffer = this.cache.get(cacheKey);
+            let buffer = this.deckViewCache.get(cacheKey);
             if (!buffer) {
               buffer = await renderDeckViewKey(key, control, phase);
-              this.cache.set(cacheKey, buffer);
-              if (this.cache.size > 256) this.cache.delete(this.cache.keys().next().value);
+              if (!current()) return;
+              this.deckViewCache.set(cacheKey, buffer);
+              if (this.deckViewCache.size > 256) this.deckViewCache.delete(this.deckViewCache.keys().next().value);
             }
             if (!current()) return;
             await deck.fillKeyBuffer(control.index, buffer, { format: 'rgb' });
@@ -336,6 +339,7 @@ export class Devices {
         }
         return;
       }
+      this.deckViewCache.clear();
       const settings = this.getSettings();
       const keys = this.getKeys().map(key => resolvedKeyFont(key, settings));
       const targets = [];
@@ -346,7 +350,14 @@ export class Devices {
         const signature = visualSignature(key, this.isActive(key));
         if (control.feedbackType === 'lcd') {
           const image = this.images.get(signature);
-          if (!image) { missing = true; continue; }
+          if (!image) {
+            missing = true;
+            if (this.sent.get(control.index)?.startsWith('deck-view:')) {
+              const buffer = await renderDeckViewKey(null, control);
+              targets.push({ control, buffer, signature: 'deck-view-cleared', placeholder: true });
+            }
+            continue;
+          }
           const buffer = await this.imageBuffer(control, signature, image);
           targets.push({ control, buffer, signature });
         }
@@ -354,6 +365,7 @@ export class Devices {
       if (!current()) return;
       const transition = this.pendingTransition;
       if (transition && !animationEnabled(this.getSettings(), transition.kind)) this.pendingTransition = null;
+      if (missing && targets.some(target => target.placeholder)) this.pendingTransition = null;
       if (this.pendingTransition) {
         // Wait for the exact artwork instead of flashing icons before the effect.
         if (missing) return;
@@ -403,6 +415,18 @@ export class Devices {
       }
     }).catch(error => { this.info.error = error.message; this.onStatus(); });
     return this.renderQueue;
+  }
+
+  async restoreWorkspace() {
+    let revision;
+    do {
+      const pending = this.render();
+      revision = this.renderRevision;
+      await pending;
+    } while (this.deck && !this.stopping && !this.info.screensaver && revision !== this.renderRevision);
+    // If USB failed, don't restore input on a unit still showing modal keys.
+    if (this.deck && !this.info.screensaver && [...this.sent.values()].some(signature => signature.startsWith('deck-view:')))
+      await this.disconnect();
   }
 
   close() {

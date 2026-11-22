@@ -29,7 +29,7 @@ export function storeDataDirectory(userData, config = {}) {
   return path.join(userData, 'plugin-stores', createHash('sha256').update(authority).digest('hex'));
 }
 
-export async function createPluginStore({ app, dialog, getWindow, getState, changed, report, deckView, getControls }) {
+export async function createPluginStore({ app, dialog, getWindow, getState, changed, report, deckView }) {
   let directory = storeDataDirectory(app.getPath('userData'));
   const patches = new Map();
   let registry, configError, channel, disabledReason;
@@ -77,10 +77,10 @@ export async function createPluginStore({ app, dialog, getWindow, getState, chan
       return release?.manifest.actions.map(action => ({ id: `store:${record.id}:${action.id}`, name: `${release.manifest.name}: ${action.name}`, description: release.manifest.description, fields: action.fields || [], storePlugin: true })) || [];
     });
   };
-  const execute = (reference, config, signal, context = {}) => {
+  const execute = (reference, config, signal, { deckEntry, ...context } = {}) => {
     const ref = parseStoreReference(reference);
     if (!ref) throw new Error('Not a store plugin.');
-    return store.execute(ref.id, ref.actionId, { config, ...context }, signal, 'execute', deckView?.entry(getControls?.()));
+    return store.execute(ref.id, ref.actionId, { config, ...context }, signal, 'execute', deckEntry);
   };
   const renderDeck = (id, context, signal) => store.execute(id, context.actionId, {
     keyId: context.keyId, config: context.config,
