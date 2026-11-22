@@ -26,6 +26,7 @@
     "@elgato-stream-deck/node": "^7.0.0",
     "@macromaxx/plugin-runtime": "file:vendor/plugin-packages/macromaxx-plugin-runtime-0.2.0.tgz",
     "@macromaxx/plugin-sdk": "file:vendor/plugin-packages/macromaxx-plugin-sdk-0.2.0.tgz",
+    "@opencode/client": "2.3.2",
     "lucide-react": "^0.468.0",
     "obs-websocket-js": "^5.0.6",
     "react": "^19.0.0",

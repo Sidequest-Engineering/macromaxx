@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Devices } from './devices.js';
 import { createDeckView } from './deck-view.js';
+import { watchOpenCodeSessions } from './opencode-sessions.js';
 import { Plugins } from './plugins.js';
 import { createPluginStore, mergePluginStatus, dispatchPluginKeyEvent } from './plugin-store.js';
 import { Actions } from './actions.js';
@@ -137,6 +138,7 @@ else {
       render: () => devices?.render(),
       report: () => log('error', 'Plugin deck view', 'The plugin deck view could not be refreshed.'),
       dispatch: (id, context, signal) => pluginStore.renderDeck(id, context, signal),
+      startSource: watchOpenCodeSessions,
       canAnimate: () => devices?.info.connected && !devices.info.screensaver,
       onOpen: () => {
         for (const index of pressed.keys()) emit({ type: 'press', index, down: false });
