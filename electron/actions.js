@@ -13,12 +13,12 @@ export class Actions {
     try {
       for (const action of actions) {
         if (controller.signal.aborted) throw new Error('Canceled');
-        try { const result = await this.run(action, controller.signal); if (result?.label || result?.color) this.updateKey(key.id, result); this.log('success', key.label, result?.message || `${action.type} executed`); }
+        try { const result = await this.run(action, controller.signal, { keyId: key.id, long }); if (result?.label || result?.color) this.updateKey(key.id, result); this.log('success', key.label, result?.message || `${action.type} executed`); }
         catch (error) { this.log('error', key.label, error.message); if (key.stopOnError !== false || controller.signal.aborted) break; }
       }
     } finally { this.running.delete(key.id); this.status(); }
   }
-  async run(action, signal) {
+  async run(action, signal, context = {}) {
     if (hasMissingCredentials(action) || (action.type === 'obs' && hasMissingCredentials(this.getState().settings))) throw new Error(missingCredentialMessage);
     if (this.native?.handles(action.type)) return this.native.execute(action, signal);
     switch (action.type) {
@@ -33,7 +33,7 @@ export class Actions {
       case 'delay': { const ms = Number(action.ms); if (!Number.isFinite(ms) || ms < 0 || ms > 300000) throw new Error('Delay must be between 0 and 300000 ms.'); await sleep(ms, undefined, { signal }); break; }
       case 'folder': this.navigate({ folder: true }); break;
       case 'profile': this.navigate({ profileId: action.profileId }); break;
-      case 'plugin': return this.plugins.execute(action.pluginId, JSON.parse(action.config || '{}'), signal);
+      case 'plugin': return this.plugins.execute(action.pluginId, JSON.parse(action.config || '{}'), signal, context);
       default: throw new Error('Unknown action.');
     }
   }

@@ -154,3 +154,35 @@
     justify-content: space-between;
   }
 }
+.plugins-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.store-trust {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  max-width: 850px;
+}
+.store-trust p {
+  margin: 12px 0;
+  line-height: 1.7;
+  color: var(--secondary);
+  max-width: 70ch;
+}
+.store-trust small {
+  color: var(--secondary);
+}
+.store-permissions {
+  padding-left: 20px;
+  line-height: 1.9;
+  margin: 12px 0;
+}
+.store-hash {
+  display: block;
+  overflow-wrap: anywhere;
+  margin: 12px 0;
+  color: var(--secondary);
+}

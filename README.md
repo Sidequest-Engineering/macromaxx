@@ -14,7 +14,7 @@ Shared NPM backends are installed by default: **@jitsi/robotjs** for keyboard/gl
 
 Window hiding and normal shutdown request a renderer-save flush before closing. Hidden renderers continue processing live key-image updates. Closing to tray does not stop native actions, while actual quit releases holds, scripts, sound playback, audio modules, and device handles.
 
-Requirements: **Node.js 22.12+**, npm, and a graphical desktop session.
+Requirements: **Node.js 22.22.2+, 24.15.0+ or 26+** (supported release lines), npm, and a graphical desktop session.
 
 ```sh
 npm install
@@ -119,6 +119,11 @@ For **Push-to-talk** or **Push-to-mute**, put the audio action first on the key.
 - **Webhook:** GET/POST/PUT/PATCH/DELETE/HEAD, JSON headers, and a custom body. JSON requests need a header such as `{"Content-Type":"application/json"}`. HTTP errors appear in Activity. Timeout: 15 seconds. Local endpoints are supported.
 - **OBS Studio:** switch scenes, toggle recording/streaming, and mute audio sources, with live key status. Requires OBS 28+ with its WebSocket server enabled (default port 4455). Connect in Settings.
 - **Plugin:** see the [plugin API and example](docs/PLUGINS.md).
+
+The new [Plugin Store](docs/PLUGIN_STORE.md) uses a separate restricted JavaScript
+runtime and authenticated release packages. It ships disabled until the publisher
+configures a reviewed registry and signing root. This does not sandbox legacy
+local Node plugins; only install those from sources you trust.
 
 ## Platform setup
 

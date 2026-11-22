@@ -13,15 +13,19 @@
     "build": "node scripts/build-media-helper.js && node scripts/build-icon.js && vite build",
     "start": "npm run build && electron .",
     "test": "node --test tests/*.test.js",
+    "vendor:plugins": "node scripts/vendor-plugin-packages.js",
     "format": "prettier --write \"src/**/*.{js,jsx,css}\" \"shared/**/*.js\"",
     "format:check": "prettier --check \"src/**/*.{js,jsx,css}\" \"shared/**/*.js\"",
     "verify:native": "node scripts/verify-native.js",
+    "verify:plugins": "node scripts/verify-plugin-runtime.js",
     "release:check": "node scripts/release.js check",
     "pack": "npm run build && npm run verify:native && electron-builder --dir",
     "dist": "npm run build && npm run verify:native && electron-builder"
   },
   "dependencies": {
     "@elgato-stream-deck/node": "^7.0.0",
+    "@macromaxx/plugin-runtime": "file:vendor/plugin-packages/macromaxx-plugin-runtime-0.1.0.tgz",
+    "@macromaxx/plugin-sdk": "file:vendor/plugin-packages/macromaxx-plugin-sdk-0.1.0.tgz",
     "lucide-react": "^0.468.0",
     "obs-websocket-js": "^5.0.6",
     "react": "^19.0.0",
@@ -56,6 +60,11 @@
       "package.json"
     ],
     "asarUnpack": [
+      "node_modules/@macromaxx/plugin-runtime/**/*",
+      "node_modules/@macromaxx/plugin-sdk/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/@jitl/**/*",
+      "node_modules/quickjs-emscripten*/**/*",
       "**/*.node",
       "plugins/native/**/*.py",
       "plugins/native/**/*.sh",
@@ -93,5 +102,11 @@
   "optionalDependencies": {
     "@jitsi/robotjs": "^0.6.24",
     "node-web-audio-api": "^2.2.0"
+  },
+  "overrides": {
+    "minimatch": "11.0.8"
+  },
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   }
 }

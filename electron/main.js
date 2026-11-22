@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { Devices } from './devices.js';
 import { Plugins } from './plugins.js';
+import { createPluginStore, mergePluginStatus, dispatchPluginKeyEvent } from './plugin-store.js';
 import { Actions } from './actions.js';
 import { AutoProfiles } from './auto-profiles.js';
 import { NativePlugins, prepareNativePlugins } from './native-plugins.js';
@@ -17,12 +18,12 @@ import { createWorkspaceExport, missingWorkspaceCredentials } from '../shared/wo
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dev = process.argv.includes('--dev');
 const nativeDirectory = path.join(here, '../plugins/native');
-let win, tray, store, state, devices, plugins, actions, autoProfiles, native, folderPath = [], quitting = false;
+let win, tray, store, state, devices, plugins, pluginStore, actions, autoProfiles, native, folderPath = [], quitting = false;
 let bootReady = false, showRequested = false, creatingWindow, saveRequest, notifiedBackground = false;
 let logs = [], pressed = new Map();
 const emit = event => { if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send('app:event', event); };
 const status = () => emit({ type: 'status', status: getStatus() });
-const getStatus = () => ({ ...native?.snapshot(), device: devices?.info, available: devices?.available || [], running: [...(actions?.running.keys() || [])], folderPath });
+const getStatus = () => ({ ...mergePluginStatus(native?.snapshot(), pluginStore?.visuals(), pluginStore?.snapshot()), device: devices?.info, available: devices?.available || [], running: [...(actions?.running.keys() || [])], folderPath });
 async function diagnosticSnapshot() {
   let keyboardCheckFailed = false;
   if (native.snapshot().native.plugins.some(plugin => plugin.id === 'keyboard' && plugin.state === 'loaded')) {
@@ -38,7 +39,7 @@ const log = (level, title, message) => { const item = { id: crypto.randomUUID(),
 const publishState = () => emit({ type: 'state', state, folderPath });
 function releasePhysicalKeys() {
   for (const index of pressed.keys()) emit({ type: 'press', index, down: false });
-  pressed.clear(); actions?.cancel();
+  pressed.clear(); actions?.cancel(); pluginStore?.cancel();
   return native?.releaseAll().catch(e => log('error', 'Native input release', e.message));
 }
 async function persist() { await store.save(state); }
@@ -127,8 +128,11 @@ else {
     });
     await native.initialize();
     autoProfiles = new AutoProfiles(() => state, id => navigate({ profileId: id, automatic: true }), e => log('error', 'Automatic profile', e.message));
-    plugins = new Plugins([path.join(app.getAppPath(), 'plugins'), path.join(app.getPath('userData'), 'plugins')]); await plugins.scan();
-    devices = new Devices({ onStatus: status, onDisconnect: releasePhysicalKeys, getKeys: () => deckSlots(state, folderPath, devices?.info.count || 15).map(slot => native.renderKey(slot.key)), getBrightness: () => state.settings.brightness, isActive: key => native.visual(key)?.active ?? isKeyActive(key, native.snapshot().obs), getSettings: () => state.settings,
+    const userPlugins = new Plugins([path.join(app.getAppPath(), 'plugins'), path.join(app.getPath('userData'), 'plugins')]);
+    pluginStore = await createPluginStore({ app, dialog, getWindow: () => win, getState: () => state, changed: () => { status(); devices?.render().catch(e => log('error', 'Plugin display', e.message)); }, report: e => log('error', 'Plugin store', e.message) });
+    plugins = { scan: async () => [...await userPlugins.scan(), ...pluginStore.actions()], execute: (id, config, signal, context) => typeof id === 'string' && id.startsWith('store:') ? pluginStore.execute(id, config, signal, context) : userPlugins.execute(id, config, signal), close: () => { userPlugins.close(); pluginStore.close(); } };
+    await plugins.scan();
+    devices = new Devices({ onStatus: status, onDisconnect: releasePhysicalKeys, getKeys: () => deckSlots(state, folderPath, devices?.info.count || 15).map(slot => pluginStore.renderKey(native.renderKey(slot.key))), getBrightness: () => state.settings.brightness, isActive: key => native.visual(key)?.active ?? isKeyActive(key, native.snapshot().obs), getSettings: () => state.settings,
       getIdleSeconds: () => powerMonitor.getSystemIdleTime(),
       onDown: index => {
         if (quitting) return;
@@ -136,18 +140,22 @@ else {
         const key = deckSlots(state, folderPath, devices.info.count)[index]?.key;
         const action = key?.actions?.[0];
         const record = { time: Date.now(), keyId: key?.id };
+        dispatchPluginKeyEvent(pluginStore, key, 'keyDown', e => log('error', 'Plugin key down', e.message));
         const hold = native.beginHold(action);
         record.hold = hold && hold.catch(e => { log('error', 'Native hold', e.message); return () => {}; });
         pressed.set(index, record); emit({ type: 'press', index, down: true });
       },
       onUp: index => {
         const record = pressed.get(index); pressed.delete(index); emit({ type: 'press', index, down: false });
+        const key = deckSlots(state, folderPath, devices.info.count)[index]?.key;
+        if (record?.keyId === key?.id) dispatchPluginKeyEvent(pluginStore, key, 'keyUp', e => log('error', 'Plugin key up', e.message));
         if (record?.hold) record.hold.then(release => release()).catch(e => log('error', 'Native release', e.message));
         else if (record && record.keyId === deckSlots(state, folderPath, devices.info.count)[index]?.key?.id) execute(index, Date.now() - record.time > 600).catch(e => log('error', 'Key', e.message));
       }
     });
     actions = new Actions({ plugins, shell, getState: () => state, navigate, log, updateKey, status, native });
     const handlers = {
+      ...pluginStore.handlers,
       init: () => ({ state, status: getStatus(), logs, folderPath }),
       save: async (_, next) => {
         validateState(next); const old = state.settings;
@@ -196,7 +204,7 @@ else {
         await devices.render(); return state;
       },
       plugins: () => plugins.scan(), openPlugins: () => shell.openPath(path.join(app.getPath('userData'), 'plugins')),
-      cancel: async () => { actions.cancel(); await native.releaseAll(); }, quit: () => { quitting = true; app.quit(); }, selectDevice: (_, devicePath) => devices.select(devicePath)
+      cancel: async () => { actions.cancel(); pluginStore.cancel(); await native.releaseAll(); }, quit: () => { quitting = true; app.quit(); }, selectDevice: (_, devicePath) => devices.select(devicePath)
     };
     for (const [name, handler] of Object.entries(handlers)) ipcMain.handle('app:' + name, (event, ...args) => { if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Unauthorized request.'); return handler(event, ...args); });
     // Linux tray implementations reliably accept PNG, rather than SVG buffers.

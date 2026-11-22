@@ -27,6 +27,7 @@ export function liveKey(key, live = {}) {
     ? {
         ...key,
         ...(typeof patch.label === 'string' ? { label: patch.label.slice(0, 1000) } : {}),
+        ...(/^#[0-9a-f]{6}$/i.test(patch.color) ? { color: patch.color } : {}),
         ...(typeof patch.image === 'string' ? { image: patch.image } : {}),
         ...(Number.isSafeInteger(patch.scrollFrame) ? { scrollFrame: patch.scrollFrame } : {}),
         ...(['slow', 'normal', 'fast'].includes(patch.scrollSpeed)
